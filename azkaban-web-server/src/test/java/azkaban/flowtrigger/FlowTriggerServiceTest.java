@@ -77,8 +77,11 @@ public class FlowTriggerServiceTest {
     final DependencyInstanceProcessor depInstProcessor = new DependencyInstanceProcessor
         (flowTriggerInstanceLoader);
 
-    flowTriggerService = new FlowTriggerService(pluginManager,
-        triggerInstProcessor, depInstProcessor, flowTriggerInstanceLoader);
+    final FlowTriggerExecutionCleaner executionCleaner = new FlowTriggerExecutionCleaner(
+        flowTriggerInstanceLoader);
+
+    flowTriggerService = new FlowTriggerService(pluginManager, triggerInstProcessor,
+        depInstProcessor, flowTriggerInstanceLoader, executionCleaner);
     flowTriggerService.start();
   }
 
@@ -142,7 +145,7 @@ public class FlowTriggerServiceTest {
 
     Thread.sleep(Duration.ofMillis(500).toMillis());
     for (final TriggerInstance runningTrigger : flowTriggerService.getRunningTriggers()) {
-      flowTriggerService.cancel(runningTrigger, CancellationCause.MANUAL);
+      flowTriggerService.cancelTriggerInstance(runningTrigger, CancellationCause.MANUAL);
     }
     Thread.sleep(Duration.ofMillis(500).toMillis());
     assertThat(flowTriggerService.getRunningTriggers()).isEmpty();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 LinkedIn Corp.
+ * Copyright 2018 LinkedIn Corp.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
  * use this file except in compliance with the License. You may obtain a copy of
@@ -12,7 +12,6 @@
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations under
  * the License.
- *
  */
 
 package azkaban;
@@ -31,6 +30,9 @@ import java.time.Duration;
  * <p>Flow level properties keys to be put in the {@link FlowProperties} class
  *
  * <p>Job level Properties keys to be put in the {@link JobProperties} class
+ *
+ * <p>Use '.' to separate name spaces and '_" to separate words in the same namespace. e.g.
+ * azkaban.job.some_key</p>
  */
 public class Constants {
 
@@ -86,7 +88,6 @@ public class Constants {
 
   // The flow exec id for a flow trigger instance unable to trigger a flow yet
   public static final int FAILED_EXEC_ID = -2;
-
 
   public static class ConfigurationKeys {
 
@@ -158,6 +159,9 @@ public class Constants {
     // The property is used for the web server to get the host name of the executor when running in SOLO mode.
     public static final String EXECUTOR_HOST = "executor.host";
 
+    // The property is used for the web server to get the port of the executor when running in SOLO mode.
+    public static final String EXECUTOR_PORT = "executor.port";
+
     // Max flow running time in mins, server will kill flows running longer than this setting.
     // if not set or <= 0, then there's no restriction on running time.
     public static final String AZKABAN_MAX_FLOW_RUNNING_MINS = "azkaban.server.flow.max.running.minutes";
@@ -222,6 +226,12 @@ public class Constants {
     public static final String QUEUEPROCESSING_ENABLED = "azkaban.queueprocessing.enabled";
 
     public static final String SESSION_TIME_TO_LIVE = "session.time.to.live";
+
+    // allowed max size of shared project dir in MB
+    public static final String PROJECT_DIR_MAX_SIZE_IN_MB = "azkaban.project_cache_max_size_in_mb";
+
+    // number of rows to be displayed on the executions page.
+    public static final String DISPLAY_EXECUTION_PAGE_SIZE = "azkaban.display.execution_page_size";
   }
 
   public static class FlowProperties {

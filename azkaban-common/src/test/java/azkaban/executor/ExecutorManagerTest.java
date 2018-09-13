@@ -26,11 +26,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import azkaban.Constants;
+import azkaban.alert.Alerter;
 import azkaban.metrics.CommonMetrics;
 import azkaban.metrics.MetricsManager;
 import azkaban.user.User;
-import azkaban.utils.AbstractMailerTest;
-import azkaban.utils.Emailer;
 import azkaban.utils.Pair;
 import azkaban.utils.Props;
 import azkaban.utils.TestUtils;
@@ -43,6 +42,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.After;
@@ -50,6 +50,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 /**
  * Test class for executor manager
@@ -67,11 +68,14 @@ public class ExecutorManagerTest {
   private ExecutableFlow flow2;
   private AlerterHolder alertHolder;
   private ExecutorApiGateway apiGateway;
+  private Alerter mailAlerter;
 
   @Before
   public void setup() {
-    this.props = AbstractMailerTest.createMailProperties();
-    this.alertHolder = new AlerterHolder(this.props, new Emailer(this.props, this.commonMetrics));
+    this.props = new Props();
+    this.mailAlerter = mock(Alerter.class);
+    this.alertHolder = mock(AlerterHolder.class);
+    when(this.alertHolder.get("email")).thenReturn(this.mailAlerter);
     this.loader = new MockExecutorLoader();
   }
 
@@ -274,17 +278,67 @@ public class ExecutorManagerTest {
   @Test
   public void testNotFoundFlows() throws Exception {
     testSetUpForRunningFlows();
+    this.manager.start();
     final ExecutableFlow flow1 = TestUtils.createTestExecutableFlow("exectest1", "exec1");
     when(this.loader.fetchExecutableFlow(-1)).thenReturn(flow1);
+    mockFlowDoesNotExist();
+    this.manager.submitExecutableFlow(flow1, this.user.getUserId());
+    final ExecutableFlow fetchedFlow = waitFlowFinished(flow1);
+    Assert.assertEquals(fetchedFlow.getStatus(), Status.FAILED);
+  }
 
+  /**
+   * 1. Executor 1 throws an exception when trying to dispatch to it
+   * 2. ExecutorManager should try next executor
+   * 3. Executor 2 accepts the dispatched execution
+   */
+  @Test
+  public void testDispatchException() throws Exception {
+    testSetUpForRunningFlows();
+    this.manager.start();
+    final ExecutableFlow flow1 = TestUtils.createTestExecutableFlow("exectest1", "exec1");
+    when(this.loader.fetchExecutableFlow(-1)).thenReturn(flow1);
+    mockFlowDoesNotExist();
+    when(this.apiGateway.callWithExecutable(any(), any(), eq(ConnectorParams.EXECUTE_ACTION)))
+        .thenThrow(new ExecutorManagerException("Mocked dispatch exception"))
+        .thenReturn(null);
+    this.manager.submitExecutableFlow(flow1, this.user.getUserId());
+    waitFlowFinished(flow1);
+    verify(this.apiGateway)
+        .callWithExecutable(flow1, this.manager.fetchExecutor(1), ConnectorParams.EXECUTE_ACTION);
+    verify(this.apiGateway)
+        .callWithExecutable(flow1, this.manager.fetchExecutor(2), ConnectorParams.EXECUTE_ACTION);
+    verify(this.loader, Mockito.times(1)).unassignExecutor(-1);
+  }
+
+  /**
+   * ExecutorManager should try to dispatch to all executors & when both fail it should remove the
+   * execution from queue and finalize it.
+   */
+  @Test
+  public void testDispatchFailed() throws Exception {
+    testSetUpForRunningFlows();
+    this.manager.start();
+    final ExecutableFlow flow1 = TestUtils.createTestExecutableFlow("exectest1", "exec1");
+    flow1.getExecutionOptions().setFailureEmails(Arrays.asList("test@example.com"));
+    when(this.loader.fetchExecutableFlow(-1)).thenReturn(flow1);
+    when(this.apiGateway.callWithExecutable(any(), any(), eq(ConnectorParams.EXECUTE_ACTION)))
+        .thenThrow(new ExecutorManagerException("Mocked dispatch exception"));
+    this.manager.submitExecutableFlow(flow1, this.user.getUserId());
+    waitFlowFinished(flow1);
+    verify(this.apiGateway)
+        .callWithExecutable(flow1, this.manager.fetchExecutor(1), ConnectorParams.EXECUTE_ACTION);
+    verify(this.apiGateway)
+        .callWithExecutable(flow1, this.manager.fetchExecutor(2), ConnectorParams.EXECUTE_ACTION);
+    verify(this.loader, Mockito.times(2)).unassignExecutor(-1);
+    verify(this.mailAlerter).alertOnError(flow1);
+  }
+
+  private void mockFlowDoesNotExist() throws Exception {
     mockUpdateResponse(ImmutableMap.of(ConnectorParams.RESPONSE_UPDATED_FLOWS,
         Collections.singletonList(ImmutableMap.of(
             ConnectorParams.UPDATE_MAP_EXEC_ID, -1,
             "error", "Flow does not exist"))));
-
-    this.manager.submitExecutableFlow(flow1, this.user.getUserId());
-    final ExecutableFlow fetchedFlow = waitFlowFinished(flow1);
-    Assert.assertEquals(fetchedFlow.getStatus(), Status.FAILED);
   }
 
   // Suppress "unchecked generic array creation for varargs parameter".
@@ -358,12 +412,12 @@ public class ExecutorManagerTest {
   @Test
   public void testFetchActiveFlowWithExecutor() throws Exception {
     testSetUpForRunningFlows();
-    final List<Pair<ExecutableFlow, Executor>> activeFlowsWithExecutor =
+    final List<Pair<ExecutableFlow, Optional<Executor>>> activeFlowsWithExecutor =
         this.manager.getActiveFlowsWithExecutor();
     Assert.assertTrue(activeFlowsWithExecutor.contains(new Pair<>(this.flow1,
-        this.manager.fetchExecutor(this.flow1.getExecutionId()))));
+        Optional.ofNullable(this.manager.fetchExecutor(this.flow1.getExecutionId())))));
     Assert.assertTrue(activeFlowsWithExecutor.contains(new Pair<>(this.flow2,
-        this.manager.fetchExecutor(this.flow2.getExecutionId()))));
+        Optional.ofNullable(this.manager.fetchExecutor(this.flow2.getExecutionId())))));
   }
 
   @Test
