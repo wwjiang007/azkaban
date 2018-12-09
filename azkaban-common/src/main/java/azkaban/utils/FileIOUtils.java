@@ -72,6 +72,19 @@ public class FileIOUtils {
     return true;
   }
 
+  public static int getFileCount(final File file) {
+    final File[] files = file.listFiles();
+    int count = 0;
+    for (final File f : files) {
+      if (f.isDirectory()) {
+        count += getFileCount(f);
+      } else {
+        count++;
+      }
+    }
+    return count;
+  }
+
 
   /**
    * Dumps a number into a new file.
@@ -81,7 +94,7 @@ public class FileIOUtils {
    * @throws IOException if file already exists
    */
   public static void dumpNumberToFile(final Path filePath, final long num) throws IOException {
-    try (BufferedWriter writer = Files
+    try (final BufferedWriter writer = Files
         .newBufferedWriter(filePath, StandardCharsets.UTF_8)) {
       writer.write(String.valueOf(num));
     } catch (final IOException e) {
@@ -128,7 +141,7 @@ public class FileIOUtils {
   /**
    * Hard link files and recurse into directories.
    */
-  public static void createDeepHardlink(final File sourceDir, final File destDir)
+  public static int createDeepHardlink(final File sourceDir, final File destDir)
       throws IOException {
     if (!sourceDir.exists()) {
       throw new IOException("Source directory " + sourceDir.getPath()
@@ -143,6 +156,7 @@ public class FileIOUtils {
     final Set<String> paths = new HashSet<>();
     createDirsFindFiles(sourceDir, sourceDir, destDir, paths);
 
+    int linkCount = 0;
     for (String path : paths) {
       final File sourceLink = new File(sourceDir, path);
       path = destDir + path;
@@ -154,9 +168,11 @@ public class FileIOUtils {
           // NOTE!! If modifying this, you must run this ignored test manually to validate:
           // FileIOUtilsTest#testHardlinkCopyOfBigDir
           Files.createLink(linkFile.toPath(), Paths.get(targetFile.getAbsolutePath()));
+          linkCount++;
         }
       }
     }
+    return linkCount;
   }
 
   private static void createDirsFindFiles(final File baseDir, final File sourceDir,

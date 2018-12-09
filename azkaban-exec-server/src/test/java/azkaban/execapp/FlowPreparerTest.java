@@ -28,6 +28,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import azkaban.execapp.FlowPreparer.ProjectsDirCacheMetrics;
 import azkaban.executor.ExecutableFlow;
 import azkaban.project.ProjectFileHandler;
 import azkaban.storage.StorageManager;
@@ -49,7 +50,6 @@ import org.junit.rules.TemporaryFolder;
 public class FlowPreparerTest {
 
   public static final String SAMPLE_FLOW_01 = "sample_flow_01";
-  final Map<Pair<Integer, Integer>, ProjectVersion> installedProjects = new HashMap<>();
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
   private File executionsDir;
@@ -75,8 +75,7 @@ public class FlowPreparerTest {
     this.projectsDir = this.temporaryFolder.newFolder("projects");
 
     this.instance = spy(
-        new FlowPreparer(createMockStorageManager(), this.executionsDir, this.projectsDir,
-            this.installedProjects, null));
+        new FlowPreparer(createMockStorageManager(), this.executionsDir, this.projectsDir, null));
     doNothing().when(this.instance).touchIfExists(any());
   }
 
@@ -92,6 +91,11 @@ public class FlowPreparerTest {
     assertThat(FileIOUtils.readNumberFromFile(
         Paths.get(pv.getInstalledDir().getPath(), FlowPreparer.PROJECT_DIR_SIZE_FILE_NAME)))
         .isEqualTo(actualDirSize);
+
+    assertThat(FileIOUtils.readNumberFromFile(
+        Paths.get(pv.getInstalledDir().getPath(), FlowPreparer.PROJECT_DIR_COUNT_FILE_NAME)))
+        .isEqualTo(8);
+
     assertTrue(pv.getInstalledDir().exists());
     assertTrue(new File(pv.getInstalledDir(), "sample_flow_01").exists());
   }
@@ -132,7 +136,7 @@ public class FlowPreparerTest {
 
     //given
     final FlowPreparer flowPreparer = new FlowPreparer(createMockStorageManager(),
-        this.executionsDir, this.projectsDir, installedProjects, null);
+        this.executionsDir, this.projectsDir, null);
 
     //when
     final List<File> expectedRemainingFiles = new ArrayList<>();
@@ -153,11 +157,10 @@ public class FlowPreparerTest {
   @Test
   public void testProjectCacheDirCleaner() throws IOException, InterruptedException {
     final Long projectDirMaxSize = 3L;
-    final Map<Pair<Integer, Integer>, ProjectVersion> installedProjects = new HashMap<>();
 
     //given
     final FlowPreparer flowPreparer = new FlowPreparer(createMockStorageManager(),
-        this.executionsDir, this.projectsDir, installedProjects, projectDirMaxSize);
+        this.executionsDir, this.projectsDir, projectDirMaxSize);
 
     //when
     final List<File> expectedRemainingFiles = new ArrayList<>();
@@ -180,5 +183,35 @@ public class FlowPreparerTest {
     //then
     assertThat(this.projectsDir.listFiles()).containsExactlyInAnyOrder(expectedRemainingFiles
         .toArray(new File[expectedRemainingFiles.size()]));
+  }
+
+  @Test
+  public void testProjectsCacheMetricsZeroHit() {
+    //given
+    final FlowPreparer.ProjectsDirCacheMetrics cacheMetrics = new ProjectsDirCacheMetrics();
+
+    //when zero hit and zero miss then
+    assertThat(cacheMetrics.getHitRatio()).isEqualTo(0);
+
+    //when
+    cacheMetrics.incrementCacheMiss();
+    //then
+    assertThat(cacheMetrics.getHitRatio()).isEqualTo(0);
+  }
+
+  @Test
+  public void testProjectsCacheMetricsHit() {
+    //given
+    final FlowPreparer.ProjectsDirCacheMetrics cacheMetrics = new ProjectsDirCacheMetrics();
+
+    //when one hit
+    cacheMetrics.incrementCacheHit();
+    //then
+    assertThat(cacheMetrics.getHitRatio()).isEqualTo(1);
+
+    //when one miss
+    cacheMetrics.incrementCacheMiss();
+    //then
+    assertThat(cacheMetrics.getHitRatio()).isEqualTo(0.5);
   }
 }
