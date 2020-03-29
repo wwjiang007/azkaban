@@ -13,7 +13,6 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package azkaban.executor;
 
 import azkaban.executor.ExecutorLogEvent.EventType;
@@ -24,6 +23,7 @@ import java.io.File;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+
 
 public interface ExecutorLoader {
 
@@ -37,6 +37,15 @@ public interface ExecutorLoader {
       throws ExecutorManagerException;
 
   Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchActiveFlows()
+      throws ExecutorManagerException;
+
+  Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchUnfinishedFlows()
+      throws ExecutorManagerException;
+
+  Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchUnfinishedFlowsMetadata()
+      throws ExecutorManagerException;
+
+  Pair<ExecutionReference, ExecutableFlow> fetchActiveFlowByExecId(int execId)
       throws ExecutorManagerException;
 
   List<ExecutableFlow> fetchFlowHistory(int skip, int num)
@@ -271,4 +280,32 @@ public interface ExecutorLoader {
 
   int removeExecutionLogsByTime(long millis)
       throws ExecutorManagerException;
+
+  void unsetExecutorIdForExecution(final int executionId) throws ExecutorManagerException;
+
+  int selectAndUpdateExecution(final int executorId, boolean isActive)
+      throws ExecutorManagerException;
+
+  ExecutableRampMap fetchExecutableRampMap()
+      throws ExecutorManagerException;
+
+  ExecutableRampItemsMap fetchExecutableRampItemsMap()
+      throws ExecutorManagerException;
+
+  ExecutableRampDependencyMap fetchExecutableRampDependencyMap()
+      throws ExecutorManagerException;
+
+  ExecutableRampExceptionalFlowItemsMap fetchExecutableRampExceptionalFlowItemsMap()
+    throws ExecutorManagerException;
+
+  void updateExecutedRampFlows(final String ramp, ExecutableRampExceptionalItems executableRampExceptionalItems)
+      throws ExecutorManagerException;
+
+  ExecutableRampExceptionalJobItemsMap fetchExecutableRampExceptionalJobItemsMap()
+      throws ExecutorManagerException;
+
+  Map<String, String> doRampActions(List<Map<String, Object>> rampActionsMap)
+      throws ExecutorManagerException;
+
+  void updateExecutableRamp(ExecutableRamp executableRamp) throws ExecutorManagerException;
 }

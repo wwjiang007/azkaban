@@ -66,8 +66,6 @@ var closeAllSubDisplays = function () {
 }
 
 var nodeClickCallback = function (event, model, node) {
-  console.log("Node clicked callback");
-
   var target = event.currentTarget;
   var type = node.type;
   var flowId = node.parent.flow;
@@ -75,6 +73,8 @@ var nodeClickCallback = function (event, model, node) {
 
   var requestURL = contextURL + "/manager?project=" + projectName + "&flow="
       + flowId + "&job=" + jobId;
+  var logURL = contextURL + "/executor?execid=" + execId + "&job="
+      + node.nestedId + "&attempt=" + node.attempt;
   var menu = [];
 
   if (type == "flow") {
@@ -85,13 +85,11 @@ var nodeClickCallback = function (event, model, node) {
         {
           title: "Collapse Flow...", callback: function () {
             model.trigger("collapseFlow", node);
-            model.trigger("resetPanZoom");
           }
         },
         {
           title: "Collapse All Flows...", callback: function () {
             model.trigger("collapseAllFlows", node);
-            model.trigger("resetPanZoom");
           }
         }
       ];
@@ -101,13 +99,11 @@ var nodeClickCallback = function (event, model, node) {
         {
           title: "Expand Flow...", callback: function () {
             model.trigger("expandFlow", node);
-            model.trigger("resetPanZoom");
           }
         },
         {
           title: "Expand All Flows...", callback: function () {
             model.trigger("expandAllFlows", node);
-            model.trigger("resetPanZoom");
           }
         }
       ];
@@ -146,7 +142,11 @@ var nodeClickCallback = function (event, model, node) {
     ]);
   }
   else {
-    menu = [
+    // this applies for type != 'flow' ie. job nodes in 2 cases:
+    // 1. Flow -> Graph tab
+    // 2. Execution -> Graph tab
+    menu = [];
+    $.merge(menu, [
       //  {title: "View Properties...", callback: function() {openJobDisplayCallback(jobId, flowId, event)}},
       //  {break: 1},
       {
@@ -165,13 +165,31 @@ var nodeClickCallback = function (event, model, node) {
           model.trigger("centerNode", node)
         }
       }
-    ];
+    ]);
+    // Include job log links in job context menu unless job hasn't been started
+    if (node.status !== 'READY' && node.status !== 'SKIPPED'
+        && node.status !== 'DISABLED' && node.status !== 'CANCELLED') {
+      // For "Flow Graph" (not an execution) node.status = READY, so this
+      // condition also works correctly for it
+      $.merge(menu, [
+        {break: 1},
+        {
+          title: "Open Log...", callback: function () {
+            window.location.href = logURL;
+          }
+        },
+        {
+          title: "Open Log in New Window...", callback: function () {
+            window.open(logURL);
+          }
+        }
+      ]);
+    }
   }
   contextMenuView.show(event, menu);
 }
 
 var jobClickCallback = function (event, model, node) {
-  console.log("Node clicked callback");
   var target = event.currentTarget;
   var type = node.type;
   var flowId = node.parent.flow;
@@ -241,12 +259,9 @@ var jobClickCallback = function (event, model, node) {
   contextMenuView.show(event, menu);
 }
 
-var edgeClickCallback = function (event, model) {
-  console.log("Edge clicked callback");
-}
+var edgeClickCallback = function (event, model) {}
 
 var graphClickCallback = function (event, model) {
-  console.log("Graph clicked callback");
   var data = model.get("data");
   var flowId = data.flow;
   var requestURL = contextURL + "/manager?project=" + projectName + "&flow="

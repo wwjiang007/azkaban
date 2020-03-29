@@ -21,7 +21,9 @@ import azkaban.utils.FileIOUtils.LogData;
 import azkaban.utils.Pair;
 import java.io.IOException;
 import java.lang.Thread.State;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -36,7 +38,9 @@ public interface ExecutorManagerAdapter {
 
   public List<Integer> getRunningFlows(int projectId, String flowId);
 
-  public List<ExecutableFlow> getRunningFlows() throws IOException;
+  public List<ExecutableFlow> getRunningFlows();
+
+  public long getQueuedFlowSize();
 
   /**
    * <pre>
@@ -81,7 +85,8 @@ public interface ExecutorManagerAdapter {
   public List<Object> getExecutionJobStats(ExecutableFlow exflow, String jobId,
       int attempt) throws ExecutorManagerException;
 
-  public String getJobLinkUrl(ExecutableFlow exFlow, String jobId, int attempt);
+  public Map<String, String> getExternalJobLogUrls(ExecutableFlow exFlow, String jobId,
+      int attempt);
 
   public void cancelFlow(ExecutableFlow exFlow, String userId)
       throws ExecutorManagerException;
@@ -96,6 +101,9 @@ public interface ExecutorManagerAdapter {
       throws ExecutorManagerException;
 
   public String submitExecutableFlow(ExecutableFlow exflow, String userId)
+      throws ExecutorManagerException;
+
+  public Map<String, String> doRampActions(List<Map<String, Object>> rampAction)
       throws ExecutorManagerException;
 
   /**
@@ -113,6 +121,8 @@ public interface ExecutorManagerAdapter {
 
   public Map<String, Object> callExecutorJMX(String hostPort, String action,
       String mBean) throws IOException;
+
+  public void start() throws ExecutorManagerException;
 
   public void shutdown();
 

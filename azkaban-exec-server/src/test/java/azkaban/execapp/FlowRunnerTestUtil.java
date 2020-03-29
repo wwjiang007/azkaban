@@ -13,7 +13,6 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package azkaban.execapp;
 
 import static org.junit.Assert.fail;
@@ -25,6 +24,7 @@ import static org.mockito.Mockito.when;
 import azkaban.event.Event;
 import azkaban.execapp.event.FlowWatcher;
 import azkaban.execapp.jmx.JmxJobMBeanManager;
+import azkaban.executor.AlerterHolder;
 import azkaban.executor.ExecutableFlow;
 import azkaban.executor.ExecutionOptions;
 import azkaban.executor.ExecutionOptions.FailureAction;
@@ -35,6 +35,8 @@ import azkaban.executor.Status;
 import azkaban.flow.Flow;
 import azkaban.jobtype.JobTypeManager;
 import azkaban.jobtype.JobTypePluginSet;
+import azkaban.metrics.CommonMetrics;
+import azkaban.metrics.MetricsManager;
 import azkaban.project.FlowLoader;
 import azkaban.project.FlowLoaderFactory;
 import azkaban.project.Project;
@@ -44,6 +46,7 @@ import azkaban.test.Utils;
 import azkaban.test.executions.ExecutionsTestUtil;
 import azkaban.utils.JSONUtils;
 import azkaban.utils.Props;
+import com.codahale.metrics.MetricRegistry;
 import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
@@ -149,8 +152,10 @@ public class FlowRunnerTestUtil {
     return execFlow;
   }
 
-  public static void startThread(final FlowRunner runner) {
-    new Thread(runner).start();
+  public static Thread startThread(final FlowRunner runner) {
+    final Thread thread = new Thread(runner);
+    thread.start();
+    return thread;
   }
 
   public FlowRunner createFromFlowFile(final String flowName) throws Exception {
@@ -250,9 +255,10 @@ public class FlowRunnerTestUtil {
     }
     exFlow.getExecutionOptions().addAllFlowParameters(flowParams);
     this.executorLoader.uploadExecutableFlow(exFlow);
+    final CommonMetrics commonMetrics = new CommonMetrics(new MetricsManager(new MetricRegistry()));
     final FlowRunner runner =
         new FlowRunner(exFlow, this.executorLoader, this.projectLoader,
-            this.jobtypeManager, azkabanProps, null);
+            this.jobtypeManager, azkabanProps, null, mock(AlerterHolder.class), commonMetrics);
     if (eventCollector != null) {
       runner.addListener(eventCollector);
     }

@@ -13,10 +13,11 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package azkaban.executor;
 
 import azkaban.executor.ExecutorLogEvent.EventType;
+import azkaban.flow.Flow;
+import azkaban.project.Project;
 import azkaban.utils.FileIOUtils.LogData;
 import azkaban.utils.Pair;
 import azkaban.utils.Props;
@@ -27,9 +28,13 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 import org.apache.commons.io.FileUtils;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /**
  * Used in unit tests to mock the "DB layer" (the real implementation is JdbcExecutorLoader).
@@ -37,7 +42,7 @@ import org.apache.log4j.Logger;
  */
 public class MockExecutorLoader implements ExecutorLoader {
 
-  private static final Logger logger = Logger.getLogger(MockExecutorLoader.class);
+  private static final Logger LOGGER = LoggerFactory.getLogger(MockExecutorLoader.class);
 
   Map<Integer, Integer> executionExecutorMapping = new ConcurrentHashMap<>();
   Map<Integer, ExecutableFlow> flows = new ConcurrentHashMap<>();
@@ -51,28 +56,64 @@ public class MockExecutorLoader implements ExecutorLoader {
   Map<Integer, ArrayList<ExecutorLogEvent>> executorEvents = new ConcurrentHashMap<>();
 
   @Override
-  public void uploadExecutableFlow(final ExecutableFlow flow)
-      throws ExecutorManagerException {
+  public void uploadExecutableFlow(final ExecutableFlow flow) throws ExecutorManagerException {
     // Clone the flow node to mimick how it would be saved in DB.
     // If we would keep a handle to the original flow node, we would also see any changes made after
     // this method was called. We must only store a snapshot of the current state.
     // Also to avoid modifying statuses of the original job nodes in this.updateExecutableFlow()
-    final ExecutableFlow exFlow = ExecutableFlow.createExecutableFlowFromObject(flow.toObject());
+    final ExecutableFlow exFlow = ExecutableFlow.createExecutableFlow(flow.toObject(),
+        flow.getStatus());
     this.flows.put(flow.getExecutionId(), exFlow);
     this.flowUpdateCount++;
   }
 
   @Override
-  public ExecutableFlow fetchExecutableFlow(final int execId)
-      throws ExecutorManagerException {
+  public ExecutableFlow fetchExecutableFlow(final int execId) throws ExecutorManagerException {
     final ExecutableFlow flow = this.flows.get(execId);
-    return ExecutableFlow.createExecutableFlowFromObject(flow.toObject());
+    return ExecutableFlow.createExecutableFlow(flow.toObject(), flow.getStatus());
   }
 
   @Override
   public Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchActiveFlows()
       throws ExecutorManagerException {
     return this.activeFlows;
+  }
+
+  @Override
+  public Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchUnfinishedFlows()
+      throws ExecutorManagerException {
+    return this.activeFlows;
+  }
+
+  @Override
+  public Map<Integer, Pair<ExecutionReference, ExecutableFlow>> fetchUnfinishedFlowsMetadata()
+      throws ExecutorManagerException {
+    return this.activeFlows.entrySet().stream()
+        .collect(Collectors.toMap(Entry::getKey, e -> {
+          final ExecutableFlow metadata = getExecutableFlowMetadata(e.getValue().getSecond());
+          return new Pair<>(e.getValue().getFirst(), metadata);
+        }));
+  }
+
+  private ExecutableFlow getExecutableFlowMetadata(
+      final ExecutableFlow fullExFlow) {
+    final Flow flow = new Flow(fullExFlow.getId());
+    final Project project = new Project(fullExFlow.getProjectId(), null);
+    project.setVersion(fullExFlow.getVersion());
+    flow.setVersion(fullExFlow.getVersion());
+    final ExecutableFlow metadata = new ExecutableFlow(project, flow);
+    metadata.setExecutionId(fullExFlow.getExecutionId());
+    metadata.setStatus(fullExFlow.getStatus());
+    metadata.setSubmitTime(fullExFlow.getSubmitTime());
+    metadata.setStartTime(fullExFlow.getStartTime());
+    metadata.setEndTime(fullExFlow.getEndTime());
+    metadata.setSubmitUser(fullExFlow.getSubmitUser());
+    return metadata;
+  }
+
+  @Override
+  public Pair<ExecutionReference, ExecutableFlow> fetchActiveFlowByExecId(final int execId) {
+    return new Pair<>(null, null);
   }
 
   @Override
@@ -100,7 +141,7 @@ public class MockExecutorLoader implements ExecutorLoader {
     for (final File file : files) {
       try {
         final String logs = FileUtils.readFileToString(file, "UTF-8");
-        logger.info("Uploaded log for [" + name + "]:[" + execId + "]:\n" + logs);
+        LOGGER.info("Uploaded log for [" + name + "]:[" + execId + "]:\n" + logs);
       } catch (final IOException e) {
         throw new RuntimeException(e);
       }
@@ -408,5 +449,86 @@ public class MockExecutorLoader implements ExecutorLoader {
   public List<ExecutableFlow> fetchRecentlyFinishedFlows(final Duration maxAge)
       throws ExecutorManagerException {
     return new ArrayList<>();
+  }
+
+  @Override
+  public int selectAndUpdateExecution(final int executorId, final boolean isActive)
+      throws ExecutorManagerException {
+    return 1;
+  }
+
+  @Override
+  public ExecutableRampMap fetchExecutableRampMap() throws ExecutorManagerException {
+    ExecutableRampMap map = ExecutableRampMap.createInstance();
+    map.add("rampId",
+        ExecutableRamp.createInstance(
+        "dali",
+        "RampPolicy",
+        ExecutableRamp.Metadata.createInstance(
+            5,
+            10,
+            false
+        ),
+        ExecutableRamp.State.createInstance(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            true)
+    ));
+    return map;
+  }
+
+  @Override
+  public ExecutableRampItemsMap fetchExecutableRampItemsMap() throws ExecutorManagerException {
+    ExecutableRampItemsMap map = ExecutableRampItemsMap.createInstance();
+    map.add("rampId", "dependencyId", "defaultValue");
+    return map;
+  }
+
+  @Override
+  public ExecutableRampDependencyMap fetchExecutableRampDependencyMap() throws ExecutorManagerException {
+    ExecutableRampDependencyMap map = ExecutableRampDependencyMap.createInstance();
+    map.add("dependency", "defaultValue", "pig,hive,spark");
+    return map;
+  }
+
+  @Override
+  public ExecutableRampExceptionalFlowItemsMap fetchExecutableRampExceptionalFlowItemsMap() throws ExecutorManagerException {
+    ExecutableRampExceptionalFlowItemsMap map = ExecutableRampExceptionalFlowItemsMap.createInstance();
+    map.add("rampId", "flowId", ExecutableRampStatus.SELECTED, 15500000L);
+    return map;
+  }
+
+  @Override
+  public ExecutableRampExceptionalJobItemsMap fetchExecutableRampExceptionalJobItemsMap() throws ExecutorManagerException {
+    ExecutableRampExceptionalJobItemsMap map = ExecutableRampExceptionalJobItemsMap.createInstance();
+    map.add("rampId", "flowId", "jobId", ExecutableRampStatus.UNSELECTED, 15000000L);
+    return map;
+  }
+
+  @Override
+  public void updateExecutedRampFlows(final String ramp, ExecutableRampExceptionalItems executableRampExceptionalItems)
+      throws ExecutorManagerException {
+
+  }
+
+  @Override
+  public void updateExecutableRamp(ExecutableRamp executableRamp) throws ExecutorManagerException {
+
+  }
+
+  @Override
+  public Map<String, String> doRampActions(List<Map<String, Object>> rampActionsMap) throws ExecutorManagerException {
+    return null;
+  }
+
+  @Override
+  public void unsetExecutorIdForExecution(final int executionId) {
   }
 }

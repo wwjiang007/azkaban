@@ -18,10 +18,13 @@ package azkaban.webapp.servlet;
 
 import azkaban.flowtrigger.quartz.FlowTriggerScheduler;
 import azkaban.flowtrigger.quartz.FlowTriggerScheduler.ScheduledFlowTrigger;
+import azkaban.project.CronSchedule;
+import azkaban.project.FlowTrigger;
 import azkaban.project.Project;
 import azkaban.project.ProjectManager;
 import azkaban.server.session.Session;
 import azkaban.user.Permission.Type;
+import azkaban.utils.TimeUtils;
 import azkaban.webapp.AzkabanWebServer;
 import java.io.IOException;
 import java.util.HashMap;
@@ -31,12 +34,15 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import org.quartz.SchedulerException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class FlowTriggerServlet extends LoginAbstractAzkabanServlet {
 
   private static final long serialVersionUID = 1L;
   private FlowTriggerScheduler scheduler;
   private ProjectManager projectManager;
+  private static final Logger logger = LoggerFactory.getLogger(FlowTriggerServlet.class);
 
   @Override
   public void init(final ServletConfig config) throws ServletException {
@@ -67,20 +73,23 @@ public class FlowTriggerServlet extends LoginAbstractAzkabanServlet {
 
     if (res != null) {
       final Map<String, Object> jsonObj = new HashMap<>();
-      jsonObj.put("cronExpression", res.getFlowTrigger().getSchedule().getCronExpression());
+      FlowTrigger flowTrigger = res.getFlowTrigger();
+      CronSchedule schedule = flowTrigger.getSchedule();
+      jsonObj.put("timeZone", schedule.getTimeZone());
+      jsonObj.put("cronExpression", schedule.getCronExpression());
       jsonObj.put("submitUser", res.getSubmitUser());
       jsonObj.put("firstSchedTime",
-          utils.formatDateTime(res.getQuartzTrigger().getStartTime().getTime()));
+          TimeUtils.formatDateTime(res.getQuartzTrigger().getStartTime().getTime()));
       jsonObj.put("nextExecTime",
-          utils.formatDateTime(res.getQuartzTrigger().getNextFireTime().getTime()));
+          TimeUtils.formatDateTime(res.getQuartzTrigger().getNextFireTime().getTime()));
 
       Long maxWaitMin = null;
-      if (res.getFlowTrigger().getMaxWaitDuration().isPresent()) {
-        maxWaitMin = res.getFlowTrigger().getMaxWaitDuration().get().toMinutes();
+      if (flowTrigger.getMaxWaitDuration().isPresent()) {
+        maxWaitMin = flowTrigger.getMaxWaitDuration().get().toMinutes();
       }
       jsonObj.put("maxWaitMin", maxWaitMin);
 
-      if (!res.getFlowTrigger().getDependencies().isEmpty()) {
+      if (!flowTrigger.getDependencies().isEmpty()) {
         jsonObj.put("dependencies", res.getDependencyListJson());
       }
       ret.put("flowTrigger", jsonObj);
@@ -115,9 +124,17 @@ public class FlowTriggerServlet extends LoginAbstractAzkabanServlet {
         } else {
           try {
             if (ajaxName.equals("pauseTrigger")) {
-              this.scheduler.pauseFlowTrigger(projectId, flowId);
+              if (this.scheduler.pauseFlowTriggerIfPresent(projectId, flowId)) {
+                logger.info("Flow trigger for flow {}.{} is paused", project.getName(), flowId);
+              } else {
+                logger.warn("Flow trigger for flow {}.{} doesn't exist", project.getName(), flowId);
+              }
             } else {
-              this.scheduler.resumeFlowTrigger(projectId, flowId);
+              if (this.scheduler.resumeFlowTriggerIfPresent(projectId, flowId)) {
+                logger.info("Flow trigger for flow {}.{} is resumed", project.getName(), flowId);
+              } else {
+                logger.warn("Flow trigger for flow {}.{} doesn't exist", project.getName(), flowId);
+              }
             }
             ret.put("status", "success");
           } catch (final SchedulerException ex) {

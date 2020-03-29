@@ -40,6 +40,9 @@ public abstract class HadoopSecurityManager {
   public static final String OBTAIN_NAMENODE_TOKEN = "obtain.namenode.token";
   public static final String OBTAIN_HCAT_TOKEN = "obtain.hcat.token";
 
+  // Add domain name
+  public static final String DOMAIN_NAME = "domain.name";
+
   public static boolean shouldProxy(final Properties prop) {
     final String shouldProxy = prop.getProperty(ENABLE_PROXYING);
 

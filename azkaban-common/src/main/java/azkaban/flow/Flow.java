@@ -51,6 +51,8 @@ public class Flow {
   private boolean isEmbeddedFlow = false;
   private double azkabanFlowVersion = Constants.DEFAULT_AZKABAN_FLOW_VERSION;
   private String condition = null;
+  private boolean isLocked = false;
+  private String flowLockErrorMessage = null;
 
   public Flow(final String id) {
     this.id = id;
@@ -64,6 +66,8 @@ public class Flow {
     final Boolean isEmbeddedFlow = (Boolean) flowObject.get("embeddedFlow");
     final Double azkabanFlowVersion = (Double) flowObject.get("azkabanFlowVersion");
     final String condition = (String) flowObject.get("condition");
+    final Boolean isLocked = (Boolean) flowObject.get("isLocked");
+    final String flowLockErrorMessage = (String) flowObject.get("flowLockErrorMessage");
 
     final Flow flow = new Flow(id);
     if (layedout != null) {
@@ -80,6 +84,14 @@ public class Flow {
 
     if (condition != null) {
       flow.setCondition(condition);
+    }
+
+    if (isLocked != null) {
+      flow.setLocked(isLocked);
+    }
+
+    if (flowLockErrorMessage != null) {
+      flow.setFlowLockErrorMessage(flowLockErrorMessage);
     }
 
     final int projId = (Integer) flowObject.get("project.id");
@@ -347,6 +359,8 @@ public class Flow {
     flowObj.put("embeddedFlow", this.isEmbeddedFlow);
     flowObj.put("azkabanFlowVersion", this.azkabanFlowVersion);
     flowObj.put("condition", this.condition);
+    flowObj.put("isLocked", this.isLocked);
+    flowObj.put("flowLockErrorMessage", this.flowLockErrorMessage);
 
     if (this.errors != null) {
       flowObj.put("errors", this.errors);
@@ -460,4 +474,15 @@ public class Flow {
     this.projectId = projectId;
   }
 
+  public boolean isLocked() { return this.isLocked; }
+
+  public void setLocked(boolean locked) { this.isLocked = locked; }
+
+  public String getFlowLockErrorMessage() {
+    return this.flowLockErrorMessage;
+  }
+
+  public void setFlowLockErrorMessage(final String flowLockErrorMessage) {
+    this.flowLockErrorMessage = flowLockErrorMessage;
+  }
 }

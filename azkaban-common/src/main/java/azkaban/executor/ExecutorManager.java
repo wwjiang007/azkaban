@@ -16,8 +16,6 @@
 
 package azkaban.executor;
 
-import static java.util.Objects.requireNonNull;
-
 import azkaban.Constants;
 import azkaban.Constants.ConfigurationKeys;
 import azkaban.event.EventHandler;
@@ -28,26 +26,23 @@ import azkaban.flow.FlowUtils;
 import azkaban.metrics.CommonMetrics;
 import azkaban.project.Project;
 import azkaban.project.ProjectWhitelist;
-import azkaban.utils.AuthenticationUtils;
 import azkaban.utils.FileIOUtils.LogData;
 import azkaban.utils.Pair;
 import azkaban.utils.Props;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.lang.Thread.State;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,8 +53,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import org.apache.commons.lang.StringUtils;
@@ -68,22 +61,14 @@ import org.joda.time.DateTime;
 
 /**
  * Executor manager used to manage the client side job.
+ *
+ * @deprecated replaced by {@link ExecutionController}
  */
 @Singleton
+@Deprecated
 public class ExecutorManager extends EventHandler implements
     ExecutorManagerAdapter {
 
-  private static final String SPARK_JOB_TYPE = "spark";
-  private static final String APPLICATION_ID = "${application.id}";
-  // The regex to look for while fetching application ID from the Hadoop/Spark job log
-  private static final Pattern APPLICATION_ID_PATTERN = Pattern
-      .compile("application_\\d+_\\d+");
-  // The regex to look for while validating the content from RM job link
-  private static final Pattern FAILED_TO_READ_APPLICATION_PATTERN = Pattern
-      .compile("Failed to read the application");
-  private static final Pattern INVALID_APPLICATION_ID_PATTERN = Pattern
-      .compile("Invalid Application ID");
-  private static final int DEFAULT_MAX_ONCURRENT_RUNS_ONEFLOW = 30;
   // 12 weeks
   private static final long DEFAULT_EXECUTION_LOGS_RETENTION_MS = 3 * 4 * 7
       * 24 * 60 * 60 * 1000L;
@@ -93,10 +78,10 @@ public class ExecutorManager extends EventHandler implements
   private final Props azkProps;
   private final CommonMetrics commonMetrics;
   private final ExecutorLoader executorLoader;
-  private final CleanerThread cleanerThread;
   private final RunningExecutionsUpdaterThread updaterThread;
   private final ExecutorApiGateway apiGateway;
   private final int maxConcurrentRunsOneFlow;
+  private final Map<Pair<String, String>, Integer> maxConcurrentRunsPerFlowMap;
   private final ExecutorManagerUpdaterStage updaterStage;
   private final ExecutionFinalizer executionFinalizer;
   private final ActiveExecutors activeExecutors;
@@ -129,34 +114,9 @@ public class ExecutorManager extends EventHandler implements
     this.updaterStage = updaterStage;
     this.executionFinalizer = executionFinalizer;
     this.updaterThread = updaterThread;
-    this.maxConcurrentRunsOneFlow = getMaxConcurrentRunsOneFlow(azkProps);
-    this.cleanerThread = createCleanerThread();
+    this.maxConcurrentRunsOneFlow = ExecutorUtils.getMaxConcurrentRunsOneFlow(azkProps);
+    this.maxConcurrentRunsPerFlowMap = ExecutorUtils.getMaxConcurentRunsPerFlowMap(azkProps);
     this.executorInfoRefresherService = createExecutorInfoRefresherService();
-  }
-
-  // TODO move to some common place
-  static boolean isFinished(final ExecutableFlow flow) {
-    switch (flow.getStatus()) {
-      case SUCCEEDED:
-      case FAILED:
-      case KILLED:
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  private int getMaxConcurrentRunsOneFlow(final Props azkProps) {
-    // The default threshold is set to 30 for now, in case some users are affected. We may
-    // decrease this number in future, to better prevent DDos attacks.
-    return azkProps.getInt(ConfigurationKeys.MAX_CONCURRENT_RUNS_ONEFLOW,
-        DEFAULT_MAX_ONCURRENT_RUNS_ONEFLOW);
-  }
-
-  private CleanerThread createCleanerThread() {
-    final long executionLogsRetentionMs = this.azkProps.getLong("execution.logs.retention.ms",
-        DEFAULT_EXECUTION_LOGS_RETENTION_MS);
-    return new CleanerThread(executionLogsRetentionMs);
   }
 
   void initialize() throws ExecutorManagerException {
@@ -176,21 +136,11 @@ public class ExecutorManager extends EventHandler implements
     this.queueProcessor = setupQueueProcessor();
   }
 
+  @Override
   public void start() throws ExecutorManagerException {
     initialize();
     this.updaterThread.start();
-    this.cleanerThread.start();
     this.queueProcessor.start();
-  }
-
-  private String findApplicationIdFromLog(final String logData) {
-    final Matcher matcher = APPLICATION_ID_PATTERN.matcher(logData);
-    String appId = null;
-    if (matcher.find()) {
-      appId = matcher.group().substring(12);
-    }
-    this.logger.info("Application ID is " + appId);
-    return appId;
   }
 
   private QueueProcessorThread setupQueueProcessor() {
@@ -571,11 +521,7 @@ public class ExecutorManager extends EventHandler implements
   }
 
   /**
-   * Get execution Ids of all active (running, non-dispatched) flows
-   *
-   * {@inheritDoc}
-   *
-   * @see azkaban.executor.ExecutorManagerAdapter#getRunningFlows()
+   * Get execution Ids of all running (unfinished) flows
    */
   public String getRunningFlowIds() {
     final List<Integer> allIds = new ArrayList<>();
@@ -587,10 +533,6 @@ public class ExecutorManager extends EventHandler implements
 
   /**
    * Get execution Ids of all non-dispatched flows
-   *
-   * {@inheritDoc}
-   *
-   * @see azkaban.executor.ExecutorManagerAdapter#getRunningFlows()
    */
   public String getQueuedFlowIds() {
     final List<Integer> allIds = new ArrayList<>();
@@ -599,6 +541,10 @@ public class ExecutorManager extends EventHandler implements
     return allIds.toString();
   }
 
+  /**
+   * Get the number of non-dispatched flows. {@inheritDoc}
+   */
+  @Override
   public long getQueuedFlowSize() {
     return this.queuedFlows.size();
   }
@@ -741,97 +687,77 @@ public class ExecutorManager extends EventHandler implements
     return jobStats;
   }
 
+  /**
+   * If the Resource Manager and Job History server urls are configured, find all the
+   * Hadoop/Spark application ids present in the Azkaban job's log and then construct the url to
+   * job logs in the Hadoop/Spark server for each application id found. Application ids are
+   * returned in the order they appear in the Azkaban job log.
+   *
+   * @param exFlow The executable flow.
+   * @param jobId The job id.
+   * @param attempt The job execution attempt.
+   * @return The map of (application id, job log url)
+   */
   @Override
-  public String getJobLinkUrl(final ExecutableFlow exFlow, final String jobId, final int attempt) {
-    if (!this.azkProps.containsKey(ConfigurationKeys.RESOURCE_MANAGER_JOB_URL) || !this.azkProps
-        .containsKey(ConfigurationKeys.HISTORY_SERVER_JOB_URL) || !this.azkProps
-        .containsKey(ConfigurationKeys.SPARK_HISTORY_SERVER_JOB_URL)) {
-      return null;
+  public Map<String, String> getExternalJobLogUrls(final ExecutableFlow exFlow, final String jobId,
+      final int attempt) {
+
+    final Map<String, String> jobLogUrlsByAppId = new LinkedHashMap<>();
+    if (!this.azkProps.containsKey(ConfigurationKeys.RESOURCE_MANAGER_JOB_URL) ||
+        !this.azkProps.containsKey(ConfigurationKeys.HISTORY_SERVER_JOB_URL) ||
+        !this.azkProps.containsKey(ConfigurationKeys.SPARK_HISTORY_SERVER_JOB_URL)) {
+      return jobLogUrlsByAppId;
     }
-
-    final String applicationId = getApplicationId(exFlow, jobId, attempt);
-    if (applicationId == null) {
-      return null;
-    }
-
-    final URL url;
-    final String jobLinkUrl;
-    boolean isRMJobLinkValid = true;
-
-    try {
-      url = new URL(this.azkProps.getString(ConfigurationKeys.RESOURCE_MANAGER_JOB_URL)
-          .replace(APPLICATION_ID, applicationId));
-      final String keytabPrincipal = requireNonNull(
-          this.azkProps.getString(ConfigurationKeys.AZKABAN_KERBEROS_PRINCIPAL));
-      final String keytabPath = requireNonNull(this.azkProps.getString(ConfigurationKeys
-          .AZKABAN_KEYTAB_PATH));
-      final HttpURLConnection connection = AuthenticationUtils.loginAuthenticatedURL(url,
-          keytabPrincipal, keytabPath);
-
-      try (final BufferedReader in = new BufferedReader(
-          new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-        String inputLine;
-        while ((inputLine = in.readLine()) != null) {
-          if (FAILED_TO_READ_APPLICATION_PATTERN.matcher(inputLine).find()
-              || INVALID_APPLICATION_ID_PATTERN.matcher(inputLine).find()) {
-            this.logger.info(
-                "RM job link is invalid or has expired for application_" + applicationId);
-            isRMJobLinkValid = false;
-            break;
-          }
-        }
-      }
-    } catch (final Exception e) {
-      this.logger.error("Failed to get job link for application_" + applicationId, e);
-      return null;
-    }
-
-    if (isRMJobLinkValid) {
-      jobLinkUrl = url.toString();
-    } else {
-      // If RM job link is invalid or has expired, fetch the job link from JHS or SHS.
-      if (exFlow.getExecutableNode(jobId).getType().equals(SPARK_JOB_TYPE)) {
-        jobLinkUrl =
-            this.azkProps.get(ConfigurationKeys.SPARK_HISTORY_SERVER_JOB_URL).replace
-                (APPLICATION_ID, applicationId);
-      } else {
-        jobLinkUrl =
-            this.azkProps.get(ConfigurationKeys.HISTORY_SERVER_JOB_URL).replace(APPLICATION_ID,
-                applicationId);
+    final Set<String> applicationIds = getApplicationIds(exFlow, jobId, attempt);
+    for (final String applicationId : applicationIds) {
+      final String jobLogUrl = ExecutionControllerUtils
+          .createJobLinkUrl(exFlow, jobId, applicationId, this.azkProps);
+      if (jobLogUrl != null) {
+        jobLogUrlsByAppId.put(applicationId, jobLogUrl);
       }
     }
 
-    this.logger.info(
-        "Job link url is " + jobLinkUrl + " for execution " + exFlow.getExecutionId() + ", job "
-            + jobId);
-    return jobLinkUrl;
+    return jobLogUrlsByAppId;
   }
 
-  private String getApplicationId(final ExecutableFlow exFlow, final String jobId,
+  /**
+   * Find all the Hadoop/Spark application ids present in the Azkaban job log. When iterating
+   * over the set returned by this method the application ids are in the same order they appear
+   * in the log.
+   *
+   * @param exFlow The executable flow.
+   * @param jobId The job id.
+   * @param attempt The job execution attempt.
+   * @return The application ids found.
+   */
+  Set<String> getApplicationIds(final ExecutableFlow exFlow, final String jobId,
       final int attempt) {
-    String applicationId;
-    boolean finished = false;
+    final Set<String> applicationIds = new LinkedHashSet<>();
     int offset = 0;
     try {
-      while (!finished) {
-        final LogData data = getExecutionJobLog(exFlow, jobId, offset, 50000, attempt);
-        if (data != null) {
-          applicationId = findApplicationIdFromLog(data.getData());
-          if (applicationId != null) {
-            return applicationId;
-          }
-          offset = data.getOffset() + data.getLength();
-          this.logger.info("Get application ID for execution " + exFlow.getExecutionId() + ", job"
-              + " " + jobId + ", attempt " + attempt + ", data offset " + offset);
-        } else {
-          finished = true;
+      LogData data = getExecutionJobLog(exFlow, jobId, offset, 50000, attempt);
+      while (data != null && data.getLength() > 0) {
+        this.logger.info("Get application ID for execution " + exFlow.getExecutionId() + ", job"
+            + " " + jobId + ", attempt " + attempt + ", data offset " + offset);
+        String logData = data.getData();
+        final int indexOfLastSpace = logData.lastIndexOf(' ');
+        final int indexOfLastTab = logData.lastIndexOf('\t');
+        final int indexOfLastEoL = logData.lastIndexOf('\n');
+        final int indexOfLastDelim = Math
+            .max(indexOfLastEoL, Math.max(indexOfLastSpace, indexOfLastTab));
+        if (indexOfLastDelim > -1) {
+          // index + 1 to avoid looping forever if indexOfLastDelim is zero
+          logData = logData.substring(0, indexOfLastDelim + 1);
         }
+        applicationIds.addAll(ExecutionControllerUtils.findApplicationIdsFromLog(logData));
+        offset = data.getOffset() + logData.length();
+        data = getExecutionJobLog(exFlow, jobId, offset, 50000, attempt);
       }
     } catch (final ExecutorManagerException e) {
       this.logger.error("Failed to get application ID for execution " + exFlow.getExecutionId() +
           ", job " + jobId + ", attempt " + attempt + ", data offset " + offset, e);
     }
-    return null;
+    return applicationIds;
   }
 
   /**
@@ -947,6 +873,13 @@ public class ExecutorManager extends EventHandler implements
   @Override
   public String submitExecutableFlow(final ExecutableFlow exflow, final String userId)
       throws ExecutorManagerException {
+    if (exflow.isLocked()) {
+      // Skip execution for locked flows.
+      final String message = String.format("Flow %s for project %s is locked.", exflow.getId(),
+          exflow.getProjectName());
+      logger.info(message);
+      return message;
+    }
 
     final String exFlowKey = exflow.getProjectName() + "." + exflow.getId() + ".submitFlow";
     // using project and flow name to prevent race condition when same flow is submitted by API and schedule at the same time
@@ -964,9 +897,11 @@ public class ExecutorManager extends EventHandler implements
                     "Failed to submit %s for project %s. Azkaban has overrun its webserver queue capacity",
                     flowId, exflow.getProjectName());
         logger.error(message);
+        this.commonMetrics.markSubmitFlowFail();
       } else {
         final int projectId = exflow.getProjectId();
         exflow.setSubmitUser(userId);
+        exflow.setStatus(Status.PREPARING);
         exflow.setSubmitTime(System.currentTimeMillis());
 
         // Get collection of running flows given a project and a specific flow name
@@ -982,9 +917,13 @@ public class ExecutorManager extends EventHandler implements
         }
 
         if (!running.isEmpty()) {
-          if (running.size() > this.maxConcurrentRunsOneFlow) {
+          final int maxConcurrentRuns = ExecutorUtils.getMaxConcurrentRunsForFlow(
+              exflow.getProjectName(), flowId, this.maxConcurrentRunsOneFlow,
+              this.maxConcurrentRunsPerFlowMap);
+          if (running.size() > maxConcurrentRuns) {
+            this.commonMetrics.markSubmitFlowSkip();
             throw new ExecutorManagerException("Flow " + flowId
-                + " has more than " + this.maxConcurrentRunsOneFlow + " concurrent runs. Skipping",
+                + " has more than " + maxConcurrentRuns + " concurrent runs. Skipping",
                 ExecutorManagerException.Reason.SkippedExecution);
           } else if (options.getConcurrentOption().equals(
               ExecutionOptions.CONCURRENT_OPTION_PIPELINE)) {
@@ -998,6 +937,7 @@ public class ExecutorManager extends EventHandler implements
                     + options.getPipelineLevel() + ". \n";
           } else if (options.getConcurrentOption().equals(
               ExecutionOptions.CONCURRENT_OPTION_SKIP)) {
+            this.commonMetrics.markSubmitFlowSkip();
             throw new ExecutorManagerException("Flow " + flowId
                 + " is already running. Skipping execution.",
                 ExecutorManagerException.Reason.SkippedExecution);
@@ -1027,22 +967,16 @@ public class ExecutorManager extends EventHandler implements
         this.executorLoader.addActiveExecutableReference(reference);
         this.queuedFlows.enqueue(exflow, reference);
         message += "Execution queued successfully with exec id " + exflow.getExecutionId();
+        this.commonMetrics.markSubmitFlowSuccess();
       }
       return message;
     }
   }
 
-  private void cleanOldExecutionLogs(final long millis) {
-    final long beforeDeleteLogsTimestamp = System.currentTimeMillis();
-    try {
-      final int count = this.executorLoader.removeExecutionLogsByTime(millis);
-      logger.info("Cleaned up " + count + " log entries.");
-    } catch (final ExecutorManagerException e) {
-      logger.error("log clean up failed. ", e);
-    }
-    logger.info(
-        "log clean up time: " + (System.currentTimeMillis() - beforeDeleteLogsTimestamp) / 1000
-            + " seconds.");
+  @Override
+  public Map<String, String> doRampActions(List<Map<String, Object>> rampActions)
+      throws ExecutorManagerException {
+    return this.executorLoader.doRampActions(rampActions);
   }
 
   /**
@@ -1089,8 +1023,12 @@ public class ExecutorManager extends EventHandler implements
 
   @Override
   public void shutdown() {
-    this.queueProcessor.shutdown();
-    this.updaterThread.shutdown();
+    if(null != this.queueProcessor) {
+      this.queueProcessor.shutdown();
+    }
+    if(null != this.updaterThread) {
+      this.updaterThread.shutdown();
+    }
   }
 
   @Override
@@ -1112,7 +1050,7 @@ public class ExecutorManager extends EventHandler implements
 
   /**
    * Calls executor to dispatch the flow, update db to assign the executor and in-memory state of
-   * executableFlow
+   * executableFlow.
    */
   private void dispatch(final ExecutionReference reference, final ExecutableFlow exflow,
       final Executor choosenExecutor) throws ExecutorManagerException {
@@ -1153,61 +1091,6 @@ public class ExecutorManager extends EventHandler implements
   @VisibleForTesting
   void setSleepAfterDispatchFailure(final Duration sleepAfterDispatchFailure) {
     this.sleepAfterDispatchFailure = sleepAfterDispatchFailure;
-  }
-
-  /*
-   * cleaner thread to clean up execution_logs, etc in DB. Runs every hour.
-   */
-  private class CleanerThread extends Thread {
-    // log file retention is 1 month.
-
-    // check every hour
-    private static final long CLEANER_THREAD_WAIT_INTERVAL_MS = 60 * 60 * 1000;
-
-    private final long executionLogsRetentionMs;
-
-    private boolean shutdown = false;
-    private long lastLogCleanTime = -1;
-
-    public CleanerThread(final long executionLogsRetentionMs) {
-      this.executionLogsRetentionMs = executionLogsRetentionMs;
-      this.setName("AzkabanWebServer-Cleaner-Thread");
-    }
-
-    @SuppressWarnings("unused")
-    public void shutdown() {
-      this.shutdown = true;
-      this.interrupt();
-    }
-
-    @Override
-    public void run() {
-      while (!this.shutdown) {
-        synchronized (this) {
-          try {
-            // Cleanup old stuff.
-            final long currentTime = System.currentTimeMillis();
-            if (currentTime - CLEANER_THREAD_WAIT_INTERVAL_MS > this.lastLogCleanTime) {
-              cleanExecutionLogs();
-              this.lastLogCleanTime = currentTime;
-            }
-
-            wait(CLEANER_THREAD_WAIT_INTERVAL_MS);
-          } catch (final InterruptedException e) {
-            ExecutorManager.logger.info("Interrupted. Probably to shut down.");
-          }
-        }
-      }
-    }
-
-    private void cleanExecutionLogs() {
-      ExecutorManager.logger.info("Cleaning old logs from execution_logs");
-      final long cutoff = System.currentTimeMillis() - this.executionLogsRetentionMs;
-      ExecutorManager.logger.info("Cleaning old log files before "
-          + new DateTime(cutoff).toString());
-      cleanOldExecutionLogs(System.currentTimeMillis()
-          - this.executionLogsRetentionMs);
-    }
   }
 
   /*
