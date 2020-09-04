@@ -293,7 +293,7 @@ public class MockExecutorLoader implements ExecutorLoader {
   }
 
   @Override
-  public int removeExecutionLogsByTime(final long millis)
+  public int removeExecutionLogsByTime(final long millis, final int recordCleanupLimit)
       throws ExecutorManagerException {
     // TODO Auto-generated method stub
     return 0;
@@ -441,6 +441,26 @@ public class MockExecutorLoader implements ExecutorLoader {
   }
 
   @Override
+  // TODO(anish-mal) To be used in a future unit test, once System calls to obtain
+  // current time have been replaced by Clocks. Clocks are needed in order to write
+  // unit tests for duration based features. Without it, the tests end up being flaky.
+  public List<ExecutableFlow> fetchAgedQueuedFlows(final Duration minAge)
+      throws ExecutorManagerException {
+    final List<ExecutableFlow> agedQueuedFlows = new ArrayList<>();
+
+    long timeThreshoold = System.currentTimeMillis() - minAge.toMillis();
+    for (final int execId : this.refs.keySet()) {
+      if (!this.executionExecutorMapping.containsKey(execId)) {
+        ExecutableFlow agedFlow = this.flows.get(execId);
+        if (agedFlow.getSubmitTime() < timeThreshoold) {
+          agedQueuedFlows.add(agedFlow);
+        }
+      }
+    }
+    return agedQueuedFlows;
+  }
+
+  @Override
   public void unassignExecutor(final int executionId) throws ExecutorManagerException {
     this.executionExecutorMapping.remove(executionId);
   }
@@ -458,29 +478,36 @@ public class MockExecutorLoader implements ExecutorLoader {
   }
 
   @Override
+  public int selectAndUpdateExecutionWithLocking(final int executorId, final boolean isActive)
+      throws ExecutorManagerException {
+    return 1;
+  }
+
+  @Override
   public ExecutableRampMap fetchExecutableRampMap() throws ExecutorManagerException {
     ExecutableRampMap map = ExecutableRampMap.createInstance();
     map.add("rampId",
-        ExecutableRamp.createInstance(
-        "dali",
-        "RampPolicy",
-        ExecutableRamp.Metadata.createInstance(
-            5,
-            10,
-            false
-        ),
-        ExecutableRamp.State.createInstance(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            false,
-            0,
-            true)
-    ));
+        ExecutableRamp.builder("dali", "RampPolicy")
+            .setMetadata(ExecutableRamp.Metadata.builder()
+                .setMaxFailureToPause(5)
+                .setMaxFailureToRampDown(10)
+                .setPercentageScaleForMaxFailure(false)
+                .build())
+            .setState(ExecutableRamp.State.builder()
+                .setStartTime(0)
+                .setEndTime(0)
+                .setLastUpdatedTime(0)
+                .setNumOfTrail(0)
+                .setNumOfSuccess(0)
+                .setNumOfFailure(0)
+                .setNumOfIgnored(0)
+                .setPaused(false)
+                .setRampStage(0)
+                .setActive(true)
+                .build())
+            .build()
+    );
+
     return map;
   }
 

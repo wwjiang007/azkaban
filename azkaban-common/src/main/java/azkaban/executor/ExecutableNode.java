@@ -66,11 +66,14 @@ public class ExecutableNode {
   private Set<String> outNodes = new HashSet<>();
   private Props inputProps;
   private Props outputProps;
-  private Props rampProps = new Props();
+  private Props rampProps;
   private long delayExecution = 0;
   private ArrayList<ExecutionAttempt> pastAttempts = null;
   private String condition;
   private ConditionOnJobStatus conditionOnJobStatus = ConditionOnJobStatus.ALL_SUCCESS;
+
+  private String modifiedBy = "unknown";
+  private String failureMessage = "null";
 
   // Transient. These values aren't saved, but rediscovered.
   private ExecutableFlowBase parentFlow;
@@ -237,6 +240,14 @@ public class ExecutableNode {
   public int getAttempt() {
     return this.attempt.get();
   }
+
+  public String getModifiedBy() { return modifiedBy; }
+
+  public void setModifiedBy(String modifiedBy) { this.modifiedBy = modifiedBy; }
+
+  public String getFailureMessage() { return failureMessage; }
+
+  public void setFailureMessage(String failureMessage) { this.failureMessage = failureMessage; }
 
   public void resetForRetry() {
     final ExecutionAttempt pastAttempt = new ExecutionAttempt(this.attempt.get(), this);

@@ -32,8 +32,10 @@ import java.util.Collections;
 import java.util.List;
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.dbutils.ResultSetHandler;
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.log4j.Logger;
 
 @Singleton
@@ -41,10 +43,12 @@ public class ExecutionFlowDao {
 
   private static final Logger logger = Logger.getLogger(ExecutionFlowDao.class);
   private final DatabaseOperator dbOperator;
+  private final MysqlNamedLock mysqlNamedLock;
 
   @Inject
-  public ExecutionFlowDao(final DatabaseOperator dbOperator) {
+  public ExecutionFlowDao(final DatabaseOperator dbOperator, final MysqlNamedLock mysqlNamedLock) {
     this.dbOperator = dbOperator;
+    this.mysqlNamedLock = mysqlNamedLock;
   }
 
   public void uploadExecutableFlow(final ExecutableFlow flow)
@@ -106,6 +110,16 @@ public class ExecutionFlowDao {
           new FetchExecutableFlows(), projectId, flowId, skip, num);
     } catch (final SQLException e) {
       throw new ExecutorManagerException("Error fetching flow history", e);
+    }
+  }
+
+  public List<ExecutableFlow> fetchAgedQueuedFlows(final Duration minAge)
+      throws ExecutorManagerException {
+    try {
+      return this.dbOperator.query(FetchExecutableFlows.FETCH_FLOWS_QUEUED_FOR_LONG_TIME,
+          new FetchExecutableFlows(), System.currentTimeMillis() - minAge.toMillis());
+    } catch (final SQLException e) {
+      throw new ExecutorManagerException("Error fetching aged queued flows", e);
     }
   }
 
@@ -252,9 +266,10 @@ public class ExecutionFlowDao {
             + "SET status=?,update_time=?,start_time=?,end_time=?,enc_type=?,flow_data=? "
             + "WHERE exec_id=?";
 
-    final String json = JSONUtils.toJSON(flow.toObject());
     byte[] data = null;
     try {
+      // If this action fails, the execution must be failed.
+      final String json = JSONUtils.toJSON(flow.toObject());
       final byte[] stringData = json.getBytes("UTF-8");
       data = stringData;
       // Todo kunkun-tang: use a common method to transform stringData to data.
@@ -262,13 +277,39 @@ public class ExecutionFlowDao {
         data = GZIPUtils.gzipBytes(stringData);
       }
     } catch (final IOException e) {
-      throw new ExecutorManagerException("Error encoding the execution flow.");
+      flow.setStatus(Status.FAILED);
+      updateExecutableFlowStatusInDB(flow);
+      throw new ExecutorManagerException("Error encoding the execution flow. Execution Id  = "
+          + flow.getExecutionId());
+    } catch (final RuntimeException re) {
+      flow.setStatus(Status.FAILED);
+      // Likely due to serialization error
+      if ( data == null && re instanceof NullPointerException) {
+        logger.warn("Failed to serialize executable flow for " + flow.getExecutionId());
+        logger.warn("NPE stacktrace" + ExceptionUtils.getStackTrace(re));
+      }
+      updateExecutableFlowStatusInDB(flow);
+      throw new ExecutorManagerException("Error encoding the execution flow due to "
+          + "RuntimeException. Execution Id  = " + flow.getExecutionId(), re);
     }
 
     try {
       this.dbOperator.update(UPDATE_EXECUTABLE_FLOW_DATA, flow.getStatus()
           .getNumVal(), flow.getUpdateTime(), flow.getStartTime(), flow
           .getEndTime(), encType.getNumVal(), data, flow.getExecutionId());
+    } catch (final SQLException e) {
+      throw new ExecutorManagerException("Error updating flow.", e);
+    }
+  }
+
+  private void updateExecutableFlowStatusInDB(final ExecutableFlow flow)
+    throws ExecutorManagerException {
+    final String UPDATE_FLOW_STATUS = "UPDATE execution_flows SET status = ?, update_time = ? "
+        + "where exec_id = ?";
+
+    try {
+      this.dbOperator.update(UPDATE_FLOW_STATUS, flow.getStatus().getNumVal(),
+          System.currentTimeMillis(), flow.getExecutionId());
     } catch (final SQLException e) {
       throw new ExecutorManagerException("Error updating flow.", e);
     }
@@ -338,13 +379,53 @@ public class ExecutionFlowDao {
     }
   }
 
+  public int selectAndUpdateExecutionWithLocking(final int executorId, final boolean isActive)
+      throws ExecutorManagerException {
+    final String UPDATE_EXECUTION = "UPDATE execution_flows SET executor_id = ?, update_time = ? "
+        + "where exec_id = ?";
+    final String selectExecutionForUpdate = isActive ?
+        SelectFromExecutionFlows.SELECT_EXECUTION_FOR_UPDATE_ACTIVE :
+        SelectFromExecutionFlows.SELECT_EXECUTION_FOR_UPDATE_INACTIVE;
+
+    final SQLTransaction<Integer> selectAndUpdateExecution = transOperator -> {
+      final String POLLING_LOCK_NAME = "execution_flows_polling";
+      final int GET_LOCK_TIMEOUT_IN_SECONDS = 5;
+      int execId = -1;
+      final boolean hasLocked = this.mysqlNamedLock.getLock(transOperator, POLLING_LOCK_NAME, GET_LOCK_TIMEOUT_IN_SECONDS);
+      logger.info("ExecutionFlow polling lock value: " + hasLocked + " for executorId: " + executorId);
+      if (hasLocked) {
+        try {
+          final List<Integer> execIds = transOperator.query(selectExecutionForUpdate, new SelectFromExecutionFlows(), executorId);
+          if (CollectionUtils.isNotEmpty(execIds)) {
+            execId = execIds.get(0);
+            transOperator.update(UPDATE_EXECUTION, executorId, System.currentTimeMillis(), execId);
+          }
+        } finally {
+          this.mysqlNamedLock.releaseLock(transOperator, POLLING_LOCK_NAME);
+          logger.info("Released polling lock for executorId: " + executorId);
+        }
+      } else {
+        logger.info("Could not acquire polling lock for executorId: " + executorId);
+      }
+      return execId;
+    };
+
+    try {
+      return this.dbOperator.transaction(selectAndUpdateExecution);
+    } catch (final SQLException e) {
+      throw new ExecutorManagerException("Error selecting and updating execution with executor "
+          + executorId, e);
+    }
+  }
+
   public static class SelectFromExecutionFlows implements
       ResultSetHandler<List<Integer>> {
 
     private static final String SELECT_EXECUTION_FOR_UPDATE_FORMAT =
-        "SELECT exec_id from execution_flows WHERE status = " + Status.PREPARING.getNumVal()
+        "SELECT exec_id from execution_flows WHERE exec_id = (SELECT exec_id from execution_flows"
+            + " WHERE status = " + Status.PREPARING.getNumVal()
             + " and executor_id is NULL and flow_data is NOT NULL and %s"
-            + " ORDER BY flow_priority DESC, update_time ASC, exec_id ASC LIMIT 1 FOR UPDATE";
+            + " ORDER BY flow_priority DESC, update_time ASC, exec_id ASC LIMIT 1) and executor_id is NULL FOR UPDATE";
 
     public static final String SELECT_EXECUTION_FOR_UPDATE_ACTIVE =
         String.format(SELECT_EXECUTION_FOR_UPDATE_FORMAT,
@@ -390,6 +471,11 @@ public class ExecutionFlowDao {
         "SELECT exec_id, enc_type, flow_data, status FROM execution_flows "
             + "WHERE project_id=? AND flow_id=? AND status=? "
             + "ORDER BY exec_id DESC LIMIT ?, ?";
+    // Fetch flows that are in preparing state for more than a certain duration.
+    private static final String FETCH_FLOWS_QUEUED_FOR_LONG_TIME =
+        "SELECT exec_id, enc_type, flow_data, status FROM execution_flows"
+            + " WHERE submit_time < ? AND status = "
+            + Status.PREPARING.getNumVal();
 
     @Override
     public List<ExecutableFlow> handle(final ResultSet rs) throws SQLException {

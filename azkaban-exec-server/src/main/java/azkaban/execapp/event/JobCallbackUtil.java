@@ -38,11 +38,12 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpRequestBase;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.message.BasicHeader;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class JobCallbackUtil {
 
-  private static final Logger logger = Logger.getLogger(JobCallbackUtil.class);
+  private static final Logger logger = LoggerFactory.getLogger(JobCallbackUtil.class);
 
   private static final Map<JobCallbackStatusEnum, String> firstJobcallbackPropertyMap =
       new HashMap<>(
@@ -157,6 +158,7 @@ public class JobCallbackUtil {
                 + contextInfo.get(CONTEXT_JOB_TOKEN));
           } else {
             // put together an URL
+            privateLogger.info("callbackUrlWithTokenReplaced: " + callbackUrlWithTokenReplaced);
             final HttpPost httpPost = new HttpPost(callbackUrlWithTokenReplaced);
             final String postActualBody =
                 replaceTokens(httpBodyValue, contextInfo, false);

@@ -25,12 +25,11 @@ import azkaban.project.ProjectManager;
 import azkaban.scheduler.Schedule;
 import azkaban.scheduler.ScheduleManager;
 import azkaban.scheduler.ScheduleManagerException;
+import azkaban.server.AzkabanAPI;
 import azkaban.server.HttpRequestUtils;
+import azkaban.server.SlaRequestUtils;
 import azkaban.server.session.Session;
-import azkaban.sla.SlaAction;
 import azkaban.sla.SlaOption;
-import azkaban.sla.SlaOption.SlaOptionBuilder;
-import azkaban.sla.SlaType;
 import azkaban.user.Permission;
 import azkaban.user.Permission.Type;
 import azkaban.user.User;
@@ -38,14 +37,10 @@ import azkaban.user.UserManager;
 import azkaban.utils.TimeUtils;
 import azkaban.webapp.AzkabanWebServer;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.TimeZone;
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
@@ -56,10 +51,18 @@ import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDateTime;
 import org.joda.time.ReadablePeriod;
 import org.joda.time.format.DateTimeFormat;
-import sun.util.calendar.ZoneInfo;
 
 
 public class ScheduleServlet extends LoginAbstractAzkabanServlet {
+
+  private static final String API_SLA_INFO = "slaInfo";
+  private static final String API_SET_SLA = "setSla";
+  private static final String API_FETCH_SCHEDULES = "fetchSchedules";
+  private static final String API_FETCH_SCHEDULE = "fetchSchedule";
+  private static final String API_LOAD_FLOW = "loadFlow";
+  private static final String API_SCHEDULE_FLOW = "scheduleFlow";
+  private static final String API_SCHEDULE_CRON_FLOW = "scheduleCronFlow";
+  private static final String API_REMOVE_SCHED = "removeSched";
 
   public static final String PARAM_SLA_EMAILS = "slaEmails";
   public static final String PARAM_SCHEDULE_ID = "scheduleId";
@@ -71,7 +74,6 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
 
   public static final String STATUS_SUCCESS = "success";
   public static final String STATUS_ERROR = "error";
-  public static final String SLA_STATUS_SUCCESS = "SUCCESS";
 
   private static final long serialVersionUID = 1L;
   private static final Logger logger = Logger.getLogger(ScheduleServlet.class);
@@ -79,14 +81,33 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
   private ScheduleManager scheduleManager;
   private UserManager userManager;
 
+  public ScheduleServlet() {
+    super(createAPIEndpoints());
+  }
 
   @Override
   public void init(final ServletConfig config) throws ServletException {
     super.init(config);
-    final AzkabanWebServer server = (AzkabanWebServer) getApplication();
+    final AzkabanWebServer server = getApplication();
     this.userManager = server.getUserManager();
     this.projectManager = server.getProjectManager();
     this.scheduleManager = server.getScheduleManager();
+  }
+
+  private static List<AzkabanAPI> createAPIEndpoints() {
+    final List<AzkabanAPI> apiEndpoints = new ArrayList<>();
+    apiEndpoints.add(new AzkabanAPI("ajax", API_SLA_INFO));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_SET_SLA));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_FETCH_SCHEDULES));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_FETCH_SCHEDULE));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_LOAD_FLOW));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_SCHEDULE_FLOW));
+    apiEndpoints.add(new AzkabanAPI("ajax", API_SCHEDULE_CRON_FLOW));
+
+    apiEndpoints.add(new AzkabanAPI("action", API_SCHEDULE_FLOW));
+    apiEndpoints.add(new AzkabanAPI("action", API_SCHEDULE_CRON_FLOW));
+    apiEndpoints.add(new AzkabanAPI("action", API_REMOVE_SCHED));
+    return apiEndpoints;
   }
 
   @Override
@@ -100,23 +121,22 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
   }
 
   private void handleAJAXAction(final HttpServletRequest req,
-      final HttpServletResponse resp, final Session session) throws ServletException,
-      IOException {
+      final HttpServletResponse resp, final Session session) throws ServletException, IOException {
     final HashMap<String, Object> ret = new HashMap<>();
     final String ajaxName = getParam(req, "ajax");
 
-    if (ajaxName.equals("slaInfo")) {
+    if (API_SLA_INFO.equals(ajaxName)) {
       ajaxSlaInfo(req, ret, session.getUser());
-    } else if (ajaxName.equals("setSla")) {
+    } else if (API_SET_SLA.equals(ajaxName)) {
       ajaxSetSla(req, ret, session.getUser());
       // alias loadFlow is preserved for backward compatibility
-    } else if (ajaxName.equals("fetchSchedules") || ajaxName.equals("loadFlow")) {
+    } else if (API_FETCH_SCHEDULES.equals(ajaxName) || API_LOAD_FLOW.equals(ajaxName)) {
       ajaxFetchSchedules(ret);
-    } else if (ajaxName.equals("scheduleFlow")) {
+    } else if (API_SCHEDULE_FLOW.equals(ajaxName)) {
       ajaxScheduleFlow(req, ret, session.getUser());
-    } else if (ajaxName.equals("scheduleCronFlow")) {
+    } else if (API_SCHEDULE_CRON_FLOW.equals(ajaxName)) {
       ajaxScheduleCronFlow(req, ret, session.getUser());
-    } else if (ajaxName.equals("fetchSchedule")) {
+    } else if (API_FETCH_SCHEDULE.equals(ajaxName)) {
       ajaxFetchSchedule(req, ret, session.getUser());
     }
 
@@ -158,7 +178,6 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
     data.put("flowname", schedule.getFlowName());
     data.put("projectname", schedule.getProjectName());
     data.put("time", schedule.getFirstSchedTime());
-    data.put("timeZone", schedule.getTimezone().getID());
     data.put("cron", schedule.getCronExpression());
 
     final DateTime time = DateTime.now();
@@ -191,21 +210,9 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
       }
 
       final String emailStr = getParam(req, PARAM_SLA_EMAILS);
-      final String[] emailSplit = emailStr.split("\\s*,\\s*|\\s*;\\s*|\\s+");
-      final List<String> slaEmails = Arrays.asList(emailSplit);
-
       final Map<String, String> settings = getParamGroup(req, PARAM_SETTINGS);
-
-      List<SlaOption> slaOptions = new ArrayList<>();
-      for (final String set : settings.keySet()) {
-        final SlaOption slaOption;
-        try {
-          slaOption = parseSlaSetting(settings.get(set), sched.getFlowName(), slaEmails);
-        } catch (final Exception e) {
-          throw new ServletException(e);
-        }
-        slaOptions.add(slaOption);
-      }
+      final List<SlaOption> slaOptions = SlaRequestUtils.parseSlaOptions(sched.getFlowName(),
+          emailStr, settings);
 
       if (slaOptions.isEmpty()) {
         throw new ScheduleManagerException(
@@ -226,64 +233,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
     }
 
   }
-
-  private SlaOption parseSlaSetting(final String set, String flowName, List<String> emails) throws
-      ScheduleManagerException {
-    logger.info("Trying to set sla with the following set: " + set);
-
-    final String[] parts = set.split(",", -1);
-    final String id = parts[0];
-    final String rule = parts[1];
-    final String duration = parts[2];
-    final String emailAction = parts[3];
-    final String killAction = parts[4];
-
-    SlaType type;
-    if (id.length() == 0) {
-      if (rule.equals(SLA_STATUS_SUCCESS)) {
-        type = SlaType.FLOW_SUCCEED;
-      } else {
-        type = SlaType.FLOW_FINISH;
-      }
-    } else { // JOB
-      if (rule.equals(SLA_STATUS_SUCCESS)) {
-        type = SlaType.JOB_SUCCEED;
-      } else {
-        type = SlaType.JOB_FINISH;
-      }
-    }
-    HashSet<SlaAction> actions = new HashSet<>();
-    if (emailAction.equals("true")) {
-      actions.add(SlaAction.ALERT);
-    }
-    if (killAction.equals("true")) {
-      actions.add(SlaAction.KILL);
-    }
-
-    final Duration dur;
-    try {
-      dur = parseDuration(duration);
-    } catch (final Exception e) {
-      throw new ScheduleManagerException(
-          "Unable to parse duration for a SLA that needs to take actions!", e);
-    }
-
-    if (actions.size() > 0) {
-      logger.info("Parsing sla as id:" + id + " type:" + type + " sla:"
-          + rule + " Duration:" + duration + " actions:" + actions);
-      return new SlaOptionBuilder(type, flowName, dur).setJobName(id).setActions(actions)
-          .setEmails(emails).createSlaOption();
-    }
-    return null;
-
-  }
-
-  private Duration parseDuration(final String duration) {
-    final int hour = Integer.parseInt(duration.split(":")[0]);
-    final int min = Integer.parseInt(duration.split(":")[1]);
-    return Duration.ofMinutes(min + hour * 60);
-  }
-
+  
   private void ajaxFetchSchedule(final HttpServletRequest req,
       final HashMap<String, Object> ret, final User user) throws ServletException {
 
@@ -301,7 +251,6 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
         jsonObj.put("nextExecTime",
             TimeUtils.formatDateTime(schedule.getNextExecTime()));
         jsonObj.put("period", TimeUtils.formatPeriod(schedule.getPeriod()));
-        jsonObj.put("timeZone", schedule.getTimezone().getID());
         jsonObj.put("cronExpression", schedule.getCronExpression());
         jsonObj.put("executionOptions", schedule.getExecutionOptions());
         ret.put("schedule", jsonObj);
@@ -388,8 +337,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
   }
 
   private void handleGetAllSchedules(final HttpServletRequest req,
-      final HttpServletResponse resp, final Session session) throws ServletException,
-      IOException {
+      final HttpServletResponse resp, final Session session) throws ServletException, IOException {
 
     final Page page =
         newPage(req, resp, session,
@@ -414,11 +362,11 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
       final HashMap<String, Object> ret = new HashMap<>();
       if (hasParam(req, "action")) {
         final String action = getParam(req, "action");
-        if (action.equals("scheduleFlow")) {
+        if (API_SCHEDULE_FLOW.equals(action)) {
           ajaxScheduleFlow(req, ret, session.getUser());
-        } else if (action.equals("scheduleCronFlow")) {
+        } else if (API_SCHEDULE_CRON_FLOW.equals(action)) {
           ajaxScheduleCronFlow(req, ret, session.getUser());
-        } else if (action.equals("removeSched")) {
+        } else if (API_REMOVE_SCHED.equals(action)) {
           ajaxRemoveSched(req, ret, session.getUser());
         }
       }
@@ -537,7 +485,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
 
     ExecutionOptions flowOptions = null;
     try {
-      flowOptions = HttpRequestUtils.parseFlowOptions(req);
+      flowOptions = HttpRequestUtils.parseFlowOptions(req, flowName);
       HttpRequestUtils.filterAdminOnlyFlowParams(this.userManager, flowOptions, user);
     } catch (final Exception e) {
       ret.put(PARAM_ERROR, e.getMessage());
@@ -615,16 +563,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
       return;
     }
 
-    DateTimeZone timezone = DateTimeZone.getDefault();
-    if (hasParam(req, "timezone")) {
-      String timezoneParam = getParam(req, "timezone");
-      timezone = getTimeZone(timezoneParam);
-      if(null == timezone) {
-        ret.put(PARAM_STATUS, STATUS_ERROR);
-        ret.put(PARAM_MESSAGE, "Unknown timezone " + timezoneParam);
-        return;
-      }
-    }
+    final DateTimeZone timezone = DateTimeZone.getDefault();
     final DateTime firstSchedTime = getPresentTimeByTimezone(timezone);
 
     String cronExpression = null;
@@ -657,7 +596,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
 
     ExecutionOptions flowOptions = null;
     try {
-      flowOptions = HttpRequestUtils.parseFlowOptions(req);
+      flowOptions = HttpRequestUtils.parseFlowOptions(req, flowName);
       HttpRequestUtils.filterAdminOnlyFlowParams(this.userManager, flowOptions, user);
     } catch (final Exception e) {
       ret.put(PARAM_ERROR, e.getMessage());
@@ -666,7 +605,7 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
     // Because either cronExpression or recurrence exists, we build schedule in the below way.
     final Schedule schedule = this.scheduleManager
         .cronScheduleFlow(-1, projectId, projectName, flowName,
-            "ready", firstSchedTime.getMillis(), endSchedTime, timezone,
+            "ready", firstSchedTime.getMillis(), endSchedTime, firstSchedTime.getZone(),
             DateTime.now().getMillis(), firstSchedTime.getMillis(),
             firstSchedTime.getMillis(), user.getUserId(), flowOptions,
             cronExpression);
@@ -676,26 +615,12 @@ public class ScheduleServlet extends LoginAbstractAzkabanServlet {
     this.projectManager.postProjectEvent(project, EventType.SCHEDULE,
         user.getUserId(), "Schedule " + schedule.toString()
             + " has been added.");
+    this.projectManager.postScheduleEvent(project, azkaban.spi.EventType.SCHEDULE_CREATED, user,
+            schedule, null);
 
     ret.put(PARAM_STATUS, STATUS_SUCCESS);
     ret.put(PARAM_SCHEDULE_ID, schedule.getScheduleId());
     ret.put(PARAM_MESSAGE, projectName + "." + flowName + " scheduled.");
-  }
-
-  public static DateTimeZone getTimeZone(String timezoneParam) {
-    try {
-      return DateTimeZone.forID(timezoneParam);
-    } catch (final IllegalArgumentException e) {
-      TimeZone zone = ZoneInfo.getTimeZone(timezoneParam);
-      if(null == zone) {
-        return null;
-      }
-      try {
-        return DateTimeZone.forTimeZone(zone);
-      } catch (final IllegalArgumentException e1) {
-        return null;
-      }
-    }
   }
 
   private DateTime parseDateTime(final String scheduleDate, final String scheduleTime) {

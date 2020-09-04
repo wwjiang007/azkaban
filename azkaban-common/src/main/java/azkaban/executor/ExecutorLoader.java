@@ -228,6 +228,9 @@ public interface ExecutorLoader {
   List<Pair<ExecutionReference, ExecutableFlow>> fetchQueuedFlows()
       throws ExecutorManagerException;
 
+  public List<ExecutableFlow> fetchAgedQueuedFlows(
+      final Duration minAge) throws ExecutorManagerException;
+
   boolean updateExecutableReference(int execId, long updateTime)
       throws ExecutorManagerException;
 
@@ -278,12 +281,15 @@ public interface ExecutorLoader {
   Pair<Props, Props> fetchExecutionJobProps(int execId, String jobId)
       throws ExecutorManagerException;
 
-  int removeExecutionLogsByTime(long millis)
+  int removeExecutionLogsByTime(long millis, int recordCleanupLimit)
       throws ExecutorManagerException;
 
   void unsetExecutorIdForExecution(final int executionId) throws ExecutorManagerException;
 
   int selectAndUpdateExecution(final int executorId, boolean isActive)
+      throws ExecutorManagerException;
+
+  int selectAndUpdateExecutionWithLocking(final int executorId, boolean isActive)
       throws ExecutorManagerException;
 
   ExecutableRampMap fetchExecutableRampMap()

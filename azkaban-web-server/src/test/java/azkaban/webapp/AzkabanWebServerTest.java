@@ -17,6 +17,10 @@
 
 package azkaban.webapp;
 
+import static azkaban.Constants.ConfigurationKeys.JETTY_PORT;
+import static azkaban.Constants.ConfigurationKeys.JETTY_USE_SSL;
+import static azkaban.Constants.ConfigurationKeys.USE_MULTIPLE_EXECUTORS;
+import static azkaban.Constants.DEFAULT_EXECUTOR_PORT_FILE;
 import static azkaban.ServiceProvider.SERVICE_PROVIDER;
 import static azkaban.ServiceProviderTest.assertSingleton;
 import static java.util.Objects.requireNonNull;
@@ -24,7 +28,6 @@ import static org.apache.commons.io.FileUtils.deleteQuietly;
 import static org.junit.Assert.assertNotNull;
 
 import azkaban.AzkabanCommonModule;
-import azkaban.Constants;
 import azkaban.database.AzkabanDatabaseSetup;
 import azkaban.database.AzkabanDatabaseUpdater;
 import azkaban.db.DatabaseOperator;
@@ -39,20 +42,14 @@ import azkaban.executor.ExecutorDao;
 import azkaban.executor.ExecutorEventsDao;
 import azkaban.executor.ExecutorLoader;
 import azkaban.executor.ExecutorManagerAdapter;
-import azkaban.executor.ExecutorManagerException;
 import azkaban.executor.FetchActiveFlowDao;
-import azkaban.flowtrigger.FlowTriggerService;
 import azkaban.flowtrigger.quartz.FlowTriggerScheduler;
-import azkaban.metrics.MetricsManager;
 import azkaban.project.ProjectLoader;
 import azkaban.project.ProjectManager;
 import azkaban.scheduler.QuartzScheduler;
-import azkaban.scheduler.ScheduleManager;
-import azkaban.server.session.SessionCache;
 import azkaban.spi.Storage;
 import azkaban.trigger.TriggerLoader;
 import azkaban.trigger.TriggerManager;
-import azkaban.user.UserManager;
 import azkaban.utils.Emailer;
 import azkaban.utils.Props;
 import com.google.inject.Guice;
@@ -62,11 +59,9 @@ import java.io.IOException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import org.apache.velocity.app.VelocityEngine;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.mortbay.jetty.Server;
 
 
 public class AzkabanWebServerTest {
@@ -101,17 +96,16 @@ public class AzkabanWebServerTest {
     props.put("database.type", "h2");
     props.put("h2.path", "./h2");
 
-    props.put(Constants.ConfigurationKeys.USE_MULTIPLE_EXECUTORS, "true");
+    props.put(USE_MULTIPLE_EXECUTORS, "true");
     props.put("server.port", "0");
-    props.put("jetty.port", "0");
+    props.put(JETTY_PORT, "0");
     props.put("server.useSSL", "true");
-    props.put("jetty.use.ssl", "false");
+    props.put(JETTY_USE_SSL, "false");
     props.put("user.manager.xml.file", getUserManagerXmlFile());
 
     // Quartz settings
     props.put("org.quartz.threadPool.class", "org.quartz.simpl.SimpleThreadPool");
     props.put("org.quartz.threadPool.threadCount", "10");
-    props.put("default.timezone.id", "UTC");
     AzkabanDatabaseUpdater.runDatabaseUpdater(props, sqlScriptsDir, true);
   }
 
@@ -121,12 +115,13 @@ public class AzkabanWebServerTest {
 
     deleteQuietly(new File("h2.mv.db"));
     deleteQuietly(new File("h2.trace.db"));
-    deleteQuietly(new File(Constants.DEFAULT_EXECUTOR_PORT_FILE));
+    deleteQuietly(new File(DEFAULT_EXECUTOR_PORT_FILE));
     deleteQuietly(new File("executions"));
     deleteQuietly(new File("projects"));
   }
 
-  protected Injector getInjector(int port) throws ExecutorManagerException {
+  @Test
+  public void testInjection() throws Exception {
     final Injector injector = Guice.createInjector(
         new AzkabanCommonModule(props),
         new AzkabanWebServerModule(props)
@@ -137,15 +132,9 @@ public class AzkabanWebServerTest {
     final ExecutorLoader executorLoader = injector.getInstance(ExecutorLoader.class);
     assertNotNull(executorLoader);
 
-    final Executor executor = executorLoader.addExecutor("localhost", port);
+    final Executor executor = executorLoader.addExecutor("localhost", 60000);
     executor.setActive(true);
     executorLoader.updateExecutor(executor);
-    return injector;
-  }
-
-  @Test
-  public void test() throws Exception {
-    final Injector injector = getInjector(60000);
 
     assertNotNull(injector.getInstance(ExecutionFlowDao.class));
     assertNotNull(injector.getInstance(DatabaseOperator.class));
@@ -175,5 +164,4 @@ public class AzkabanWebServerTest {
 
     SERVICE_PROVIDER.unsetInjector();
   }
-
 }

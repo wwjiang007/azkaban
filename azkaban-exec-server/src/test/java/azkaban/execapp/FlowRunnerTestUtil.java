@@ -40,6 +40,7 @@ import azkaban.metrics.MetricsManager;
 import azkaban.project.FlowLoader;
 import azkaban.project.FlowLoaderFactory;
 import azkaban.project.Project;
+import azkaban.project.ProjectFileHandler;
 import azkaban.project.ProjectLoader;
 import azkaban.project.ProjectManagerException;
 import azkaban.test.Utils;
@@ -64,6 +65,7 @@ public class FlowRunnerTestUtil {
   private final File projectDir;
   private final ProjectLoader projectLoader;
   private ExecutorLoader executorLoader;
+  private final ProjectFileHandler handler;
 
   public FlowRunnerTestUtil(final String flowName, final TemporaryFolder temporaryFolder)
       throws Exception {
@@ -76,8 +78,12 @@ public class FlowRunnerTestUtil {
         .prepareProject(this.project, this.projectDir, this.workingDir);
 
     this.executorLoader = mock(ExecutorLoader.class);
-    this.projectLoader = mock(ProjectLoader.class);
     when(this.executorLoader.updateExecutableReference(anyInt(), anyLong())).thenReturn(true);
+
+    this.projectLoader = mock(ProjectLoader.class);
+    handler = new ProjectFileHandler(1, 1, 1, "testUser", "zip", "test.zip",
+            1, null, null, null, "111.111.111.111");
+    when(this.projectLoader.fetchProjectMetaData(anyInt(), anyInt())).thenReturn(handler);
 
     Utils.initServiceProvider();
     JmxJobMBeanManager.getInstance().initialize(new Props());
@@ -93,12 +99,12 @@ public class FlowRunnerTestUtil {
    * Initialize the project with the flow definitions stored in the given source directory. Also
    * copy the source directory to the working directory.
    *
-   * @param project project to initialize
-   * @param sourceDir the source dir
+   * @param project    project to initialize
+   * @param sourceDir  the source dir
    * @param workingDir the working dir
    * @return the flow name to flow map
    * @throws ProjectManagerException the project manager exception
-   * @throws IOException the io exception
+   * @throws IOException             the io exception
    */
   public static Map<String, Flow> prepareProject(final Project project, final File sourceDir,
       final File workingDir)
@@ -255,10 +261,13 @@ public class FlowRunnerTestUtil {
     }
     exFlow.getExecutionOptions().addAllFlowParameters(flowParams);
     this.executorLoader.uploadExecutableFlow(exFlow);
-    final CommonMetrics commonMetrics = new CommonMetrics(new MetricsManager(new MetricRegistry()));
+    final MetricsManager metricsManager = new MetricsManager(new MetricRegistry());
+    final CommonMetrics commonMetrics = new CommonMetrics(metricsManager);
+    final ExecMetrics execMetrics = new ExecMetrics(metricsManager);
     final FlowRunner runner =
         new FlowRunner(exFlow, this.executorLoader, this.projectLoader,
-            this.jobtypeManager, azkabanProps, null, mock(AlerterHolder.class), commonMetrics);
+            this.jobtypeManager, azkabanProps, null, mock(AlerterHolder.class), commonMetrics,
+            execMetrics);
     if (eventCollector != null) {
       runner.addListener(eventCollector);
     }

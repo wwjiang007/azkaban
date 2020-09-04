@@ -87,6 +87,12 @@ public class JdbcExecutorLoader implements ExecutorLoader {
     return this.executionFlowDao.fetchQueuedFlows();
   }
 
+  @Override
+  public List<ExecutableFlow> fetchAgedQueuedFlows(final Duration minAge)
+      throws ExecutorManagerException {
+    return this.executionFlowDao.fetchAgedQueuedFlows(minAge);
+  }
+
   /**
    * maxAge indicates how long finished flows are shown in Recently Finished flow page.
    */
@@ -338,9 +344,9 @@ public class JdbcExecutorLoader implements ExecutorLoader {
   }
 
   @Override
-  public int removeExecutionLogsByTime(final long millis)
+  public int removeExecutionLogsByTime(final long millis, final int recordCleanupLimit)
       throws ExecutorManagerException {
-    return this.executionLogsDao.removeExecutionLogsByTime(millis);
+    return this.executionLogsDao.removeExecutionLogsByTime(millis, recordCleanupLimit);
   }
 
   @Override
@@ -352,6 +358,12 @@ public class JdbcExecutorLoader implements ExecutorLoader {
   public int selectAndUpdateExecution(final int executorId, final boolean isActive)
       throws ExecutorManagerException {
     return this.executionFlowDao.selectAndUpdateExecution(executorId, isActive);
+  }
+
+  @Override
+  public int selectAndUpdateExecutionWithLocking(final int executorId, final boolean isActive)
+      throws ExecutorManagerException {
+    return this.executionFlowDao.selectAndUpdateExecutionWithLocking(executorId, isActive);
   }
 
   @Override
